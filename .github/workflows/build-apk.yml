@@ -1,0 +1,76 @@
+name: RoviGram
+# На какие действия будет срабатывать данная автоматизация
+on:
+  # На любое изменение кода в ветке main
+  push:
+    branches: [ "main" ]
+    
+  # На любой pull-request (предложение изменения кода) в ветке main
+  pull_request:
+    branches: [ "main" ]
+
+  # Также разрешаем запуск в ручном режиме
+  workflow_dispatch:
+
+# Здесь укзаываются действия, которые будут выполнятся. Они могут выполняться как асинхронно, так и последовательно
+jobs:
+  # Это название задачи и её объявление
+  build:
+    # На какой системе будет запущена данная задача
+    runs-on: ubuntu-latest
+    
+    # Задаём глобальные переменные, которые нам нужны из секретов или просто название файлов
+    env:
+      ENCODED_STRING: ${{ secrets.SIGNING_KEY_STORE }}
+      SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+      SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+      SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+      STORE_NAME: "keystore.jks"
+
+    # Последовательные шаги для выполнения задачи
+    steps:
+      # Скачиваем в систему наш репозиторий
+      - uses: actions/checkout@v4
+
+      # Устанавливаем Java в нашу систему
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'corretto'
+          java-version: 17
+      
+      # Теперь подсказываем системе - что данные из кэша можно сохранять между сборками, чтобы ускорить их
+      - name: Cache Gradle and wrapper
+        uses: actions/cache@v4
+        with:
+           path: |
+             ~/.gradle/caches
+             ~/.gradle/wrapper
+           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+      
+      # Раскодируем наш файл из секретов с хранилищем всех ключей
+      - name: Decode Keystore
+        run: |
+           echo $ENCODED_STRING > keystore-b64.txt
+           base64 -d keystore-b64.txt > $STORE_NAME
+
+        # Выдаём разрешение на впыолнение файла (иначе если делали из Windows - то файл по умолчанию не запустится)
+      - name: Grant permission for run
+        run: chmod -R 777 ./gradlew
+        
+        # Собираем APK файл с подписью 
+      - name: Build Release apk
+        run: ./gradlew assembleRelease -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/$STORE_NAME -Pandroid.injected.signing.store.password=$SIGNING_STORE_PASSWORD -Pandroid.injected.signing.key.alias=$SIGNING_KEY_ALIAS -Pandroid.injected.signing.key.password=$SIGNING_KEY_PASSWORD
+        
+        # Собираем AAB файл с подписью 
+      - name: Build Release bundle
+        run: ./gradlew bundleRelease -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/$STORE_NAME -Pandroid.injected.signing.store.password=$SIGNING_STORE_PASSWORD -Pandroid.injected.signing.key.alias=$SIGNING_KEY_ALIAS -Pandroid.injected.signing.key.password=$SIGNING_KEY_PASSWORD
+
+        # Загружаем наши файлики в артефакты
+      - name: Upload Release Build to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts
+          path: |
+            app/build/outputs/apk/release/
+            app/build/outputs/bundle/release/
